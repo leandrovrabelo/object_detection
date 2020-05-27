@@ -17,6 +17,12 @@
 import graphsurgeon as gs
 import tensorflow as tf
 
+all_assert_nodes = graph.find_nodes_by_op("Assert")
+graph.remove(all_assert_nodes, remove_exclusive_dependencies=True)
+
+all_identity_nodes = graph.find_nodes_by_op("Identity")
+graph.forward_inputs(all_identity_nodes)
+
 Input = gs.create_node("Input",
     op="Placeholder",
     dtype=tf.float32,
@@ -36,19 +42,31 @@ NMS = gs.create_plugin_node(name="NMS", op="NMS_TRT",
     nmsThreshold=0.6,
     topK=100,
     keepTopK=100,
-    numClasses=3,
+    numClasses=4, # Add the number of classes that you trained + 1 (background)
     inputOrder=[0, 2, 1],
     confSigmoid=1,
     isNormalized=1)
-concat_priorbox = gs.create_node(name="concat_priorbox", op="ConcatV2", dtype=tf.float32, axis=2)
-concat_box_loc = gs.create_plugin_node("concat_box_loc", op="FlattenConcat_TRT", dtype=tf.float32, axis=1, ignoreBatch=0)
-concat_box_conf = gs.create_plugin_node("concat_box_conf", op="FlattenConcat_TRT", dtype=tf.float32, axis=1, ignoreBatch=0)
+concat_priorbox = gs.create_node(name="concat_priorbox", 
+                                 op="ConcatV2", 
+                                 dtype=tf.float32, 
+                                 axis=2)
+concat_box_loc = gs.create_plugin_node("concat_box_loc", 
+                                       op="FlattenConcat_TRT", 
+                                       dtype=tf.float32, 
+                                       axis=1, 
+                                       ignoreBatch=0)
+concat_box_conf = gs.create_plugin_node("concat_box_conf", 
+                                        op="FlattenConcat_TRT", 
+                                        dtype=tf.float32, 
+                                        axis=1, 
+                                        ignoreBatch=0)
 
 namespace_plugin_map = {
     "MultipleGridAnchorGenerator": PriorBox,
     "Postprocessor": NMS,
     "Preprocessor": Input,
     "ToFloat": Input,
+    "Cast": Input,
     "image_tensor": Input,
     "MultipleGridAnchorGenerator/Concatenate": concat_priorbox,
     "MultipleGridAnchorGenerator/Identity": concat_priorbox,
@@ -61,4 +79,9 @@ def preprocess(dynamic_graph):
     dynamic_graph.collapse_namespaces(namespace_plugin_map)
     # Remove the outputs, so we just have a single output node (NMS).
     dynamic_graph.remove(dynamic_graph.graph_outputs, remove_exclusive_dependencies=False)
-
+    
+    # Create a constant Tensor and set it as input for GridAnchor_TRT
+    data = np.array([1, 1], dtype=np.float32)
+    anchor_input = gs.create_node("AnchorInput", "Const", value=data)
+    graph.append(anchor_input)
+    graph.find_nodes_by_op("GridAnchor_TRT")[0].input.insert(0, "AnchorInput")
